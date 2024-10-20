@@ -73,18 +73,18 @@
       "properties": {
         "rust.tests.filePattern": {
           "type": "string",
-          "default": "**/*.{test,spec}.{js,ts,tsx,jsx}",
-          "description": "Glob pattern to match test files (e.g., **/*.test.{js,ts,tsx,jsx})"
+          "default": "**/*.rs",
+          "description": "Glob pattern to match Rust test files (e.g., **/*.rs)"
         },
         "rust.tests.customFlag": {
           "type": "string",
           "default": "",
-          "description": "Custom flag added to the end of test command"
+          "description": "Custom flag added to the end of Rust test command"
         },
         "rust.tests.customScript": {
           "type": "string",
-          "default": "",
-          "description": "Custom script to use instead of `bun test`, for example script from `package.json`"
+          "default": "cargo test",
+          "description": "Custom script to use instead of `cargo test`"
         }
       }
     },
@@ -105,7 +105,5 @@
       }
     ]
   },
-  "dependencies": {
-    "syn": "^0.15.0"
-  }
+  "dependencies": { "toml": "^3.0.0" }
 }

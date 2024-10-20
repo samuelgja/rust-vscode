@@ -1,0 +1,8 @@
+[workspace]
+
+members = ["packages/some_lib" 
+   
+, "packages/some_main"]
+
+
+

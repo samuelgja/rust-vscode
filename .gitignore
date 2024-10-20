@@ -3,6 +3,7 @@
 /node_modules
 /extension
 /example/.vscode
+target/
 /.vscode-test
 
 # macOS files
