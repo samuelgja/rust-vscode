@@ -1,0 +1,7 @@
+{
+  "version": 3,
+  "sources": ["../src/web-extension.ts"],
+  "sourcesContent": ["import * as vscode from \"vscode\";\n\nexport function activate(context: vscode.ExtensionContext) {}\n\nexport function deactivate() {}\n"],
+  "mappings": ";;;;;;;;;;;;;;;;;;;AAAA;AAAA;AAAA;AAAA;AAAA;AAAA;AAEO,SAAS,SAAS,SAAkC;AAAC;AAErD,SAAS,aAAa;AAAC;",
+  "names": []
+}
