@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
 import * as toml from "toml";
+
 /**
  * Find all matching test functions via regex, including async tests (e.g., #[anyword::test] or #[test]), and ensure they are not commented out.
  */
@@ -97,6 +98,7 @@ export function registerTestCodeLens(context: vscode.ExtensionContext) {
     )
   );
 }
+
 /**
  * This function registers the test runner commands.
  */
@@ -143,8 +145,15 @@ export function registerTestRunner(context: vscode.ExtensionContext) {
 
       let commandParts = [];
 
-      // If necessary, change directory to where Cargo.toml is located
-      if (cargoTomlDir && cargoTomlDir !== vscode.workspace.rootPath) {
+      // Get the workspace root
+      const workspaceFolders = vscode.workspace.workspaceFolders;
+      const workspaceRoot =
+        workspaceFolders && workspaceFolders.length > 0
+          ? workspaceFolders[0].uri.fsPath
+          : "";
+
+      // Include cd command only if necessary
+      if (cargoTomlDir && cargoTomlDir !== workspaceRoot) {
         // Use appropriate change directory command based on OS
         const cdCommand =
           process.platform === "win32"
@@ -244,45 +253,77 @@ export function registerTestRunner(context: vscode.ExtensionContext) {
       const packageName = cargoConfig.package && cargoConfig.package.name;
       const cargoTomlDir = path.dirname(cargoTomlPath);
 
-      // Determine target type and name
-      let targetType: "bin" | "lib" = "lib";
-      let targetName = packageName;
+      const srcDir = path.join(cargoTomlDir, "src");
+
+      // Determine if the crate has a library target
+      let hasLib = false;
+      if (cargoConfig.lib) {
+        hasLib = true;
+      } else {
+        // Check if src/lib.rs exists
+        if (fs.existsSync(path.join(srcDir, "lib.rs"))) {
+          hasLib = true;
+        }
+      }
+
+      // Collect fully qualified test function names
+      const testFunctionFullNames = collectTestFunctionFullNames(
+        filePath,
+        cargoTomlDir
+      );
 
       const relativeFilePath = path
         .relative(cargoTomlDir, filePath)
         .replace(/\\/g, "/");
 
-      // Check if the file is part of a binary target
-      let isBin = false;
+      let targetType: "bin" | "lib" = "lib";
+      let targetName = packageName;
+
+      // List of binary targets
+      const binTargets: Array<{ name: string; path: string }> = [];
+
       if (cargoConfig.bin && Array.isArray(cargoConfig.bin)) {
         for (const bin of cargoConfig.bin) {
+          const binName = bin.name;
           const binPath = bin.path
-            ? bin.path.replace(/\\/g, "/")
-            : `src/${bin.name}.rs`;
-          if (relativeFilePath === binPath) {
-            isBin = true;
-            targetType = "bin";
-            targetName = bin.name;
-            break;
-          }
+            ? path.join(cargoTomlDir, bin.path)
+            : path.join(cargoTomlDir, "src", "main.rs");
+          binTargets.push({ name: binName, path: binPath });
         }
       } else {
         // Default binary path is src/main.rs
-        if (relativeFilePath === "src/main.rs") {
-          isBin = true;
-          targetType = "bin";
-          targetName = packageName;
+        const defaultBinPath = path.join(cargoTomlDir, "src", "main.rs");
+        if (fs.existsSync(defaultBinPath)) {
+          binTargets.push({ name: packageName, path: defaultBinPath });
         }
       }
 
-      // If not a binary target, assume it's a library
-      if (!isBin) {
-        targetType = "lib";
-        targetName = packageName;
+      let isBin = false;
+
+      // Check if the file is part of a binary target
+      for (const bin of binTargets) {
+        const binRelativePath = path
+          .relative(cargoTomlDir, bin.path)
+          .replace(/\\/g, "/");
+        if (relativeFilePath === binRelativePath) {
+          isBin = true;
+          targetType = "bin";
+          targetName = bin.name;
+          break;
+        } else if (relativeFilePath.startsWith("src/")) {
+          // The file is in src/ and may be included via mod statements
+          isBin = true;
+          targetType = "bin";
+          targetName = bin.name;
+          break;
+        }
       }
 
-      // Collect fully qualified test function names
-      const testFunctionFullNames = collectTestFunctionFullNames(filePath);
+      if (!hasLib) {
+        // If there is no library target, we must use --bin
+        targetType = "bin";
+        targetName = binTargets[0].name;
+      }
 
       return {
         packageName,
@@ -296,15 +337,43 @@ export function registerTestRunner(context: vscode.ExtensionContext) {
       return null;
     }
   }
-  function collectTestFunctionFullNames(filePath: string): {
-    [key: string]: string;
-  } {
+
+  function collectTestFunctionFullNames(
+    filePath: string,
+    cargoTomlDir: string
+  ): { [key: string]: string } {
     const fileContent = fs.readFileSync(filePath, "utf8");
     const testNames: { [key: string]: string } = {};
     const lines = fileContent.split("\n");
+
+    // Compute the file-based module path
+    const srcDir = path.join(cargoTomlDir, "src");
+    let relativeFilePath = path.relative(srcDir, filePath).replace(/\\/g, "/");
+    if (relativeFilePath.startsWith("../")) {
+      // The file is not inside src/, so no module path
+      relativeFilePath = "";
+    }
+    // Remove .rs extension and replace '/' with '::'
+    let fileModulePath = relativeFilePath
+      .replace(/\.rs$/, "")
+      .replace(/\/mod$/, "")
+      .replace(/\//g, "::");
+
+    // Exclude main.rs and lib.rs from module path
+    if (fileModulePath === "main" || fileModulePath === "lib") {
+      fileModulePath = "";
+    }
+
+    // Split the module path into components
     const moduleStack: Array<{ name: string; braceLevel: number }> = [];
+    if (fileModulePath) {
+      fileModulePath.split("::").forEach((moduleName) => {
+        moduleStack.push({ name: moduleName, braceLevel: -1 }); // Set braceLevel to -1
+      });
+    }
+
     let braceLevel = 0;
-    let currentModulePath = "";
+    let currentModulePath = moduleStack.map((m) => m.name).join("::");
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
@@ -343,9 +412,10 @@ export function registerTestRunner(context: vscode.ExtensionContext) {
       braceLevel += (line.match(/{/g) || []).length;
       braceLevel -= (line.match(/}/g) || []).length;
 
-      // Check if we need to pop modules
+      // Check if we need to pop modules (only those with non-negative braceLevel)
       while (
         moduleStack.length > 0 &&
+        moduleStack[moduleStack.length - 1].braceLevel >= 0 &&
         braceLevel < moduleStack[moduleStack.length - 1].braceLevel + 1
       ) {
         moduleStack.pop();
@@ -355,7 +425,8 @@ export function registerTestRunner(context: vscode.ExtensionContext) {
 
     return testNames;
   }
-  // Register the "Run Test" command
+
+  // Register the commands as before
   const runTest = vscode.commands.registerCommand(
     "extension.rust.tests.runTest",
     async (fileName?: string, testName?: string) => {
@@ -363,7 +434,6 @@ export function registerTestRunner(context: vscode.ExtensionContext) {
     }
   );
 
-  // Register the "Watch Test" command
   const watchTest = vscode.commands.registerCommand(
     "extension.rust.tests.watchTest",
     async (fileName?: string, testName?: string) => {
@@ -371,7 +441,6 @@ export function registerTestRunner(context: vscode.ExtensionContext) {
     }
   );
 
-  // Register the "Run Release Test" command
   const runReleaseTest = vscode.commands.registerCommand(
     "extension.rust.tests.runReleaseTest",
     async (fileName?: string, testName?: string) => {
@@ -379,7 +448,6 @@ export function registerTestRunner(context: vscode.ExtensionContext) {
     }
   );
 
-  // Register the "Watch Release Test" command
   const watchReleaseTest = vscode.commands.registerCommand(
     "extension.rust.tests.watchReleaseTest",
     async (fileName?: string, testName?: string) => {

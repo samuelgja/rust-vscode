@@ -3870,7 +3870,9 @@ function registerTestRunner(context) {
     if (cargoInfo) {
       const { packageName, targetType, targetName, cargoTomlDir } = cargoInfo;
       let commandParts = [];
-      if (cargoTomlDir && cargoTomlDir !== vscode.workspace.rootPath) {
+      const workspaceFolders = vscode.workspace.workspaceFolders;
+      const workspaceRoot = workspaceFolders && workspaceFolders.length > 0 ? workspaceFolders[0].uri.fsPath : "";
+      if (cargoTomlDir && cargoTomlDir !== workspaceRoot) {
         const cdCommand = process.platform === "win32" ? `cd /d "${cargoTomlDir}"` : `cd "${cargoTomlDir}"`;
         commandParts.push(cdCommand);
       }
@@ -3932,32 +3934,54 @@ function registerTestRunner(context) {
       const cargoConfig = toml.parse(cargoTomlContent);
       const packageName = cargoConfig.package && cargoConfig.package.name;
       const cargoTomlDir = path.dirname(cargoTomlPath);
+      const srcDir = path.join(cargoTomlDir, "src");
+      let hasLib = false;
+      if (cargoConfig.lib) {
+        hasLib = true;
+      } else {
+        if (fs.existsSync(path.join(srcDir, "lib.rs"))) {
+          hasLib = true;
+        }
+      }
+      const testFunctionFullNames = collectTestFunctionFullNames(
+        filePath,
+        cargoTomlDir
+      );
+      const relativeFilePath = path.relative(cargoTomlDir, filePath).replace(/\\/g, "/");
       let targetType = "lib";
       let targetName = packageName;
-      const relativeFilePath = path.relative(cargoTomlDir, filePath).replace(/\\/g, "/");
-      let isBin = false;
+      const binTargets = [];
       if (cargoConfig.bin && Array.isArray(cargoConfig.bin)) {
         for (const bin of cargoConfig.bin) {
-          const binPath = bin.path ? bin.path.replace(/\\/g, "/") : `src/${bin.name}.rs`;
-          if (relativeFilePath === binPath) {
-            isBin = true;
-            targetType = "bin";
-            targetName = bin.name;
-            break;
-          }
+          const binName = bin.name;
+          const binPath = bin.path ? path.join(cargoTomlDir, bin.path) : path.join(cargoTomlDir, "src", "main.rs");
+          binTargets.push({ name: binName, path: binPath });
         }
       } else {
-        if (relativeFilePath === "src/main.rs") {
-          isBin = true;
-          targetType = "bin";
-          targetName = packageName;
+        const defaultBinPath = path.join(cargoTomlDir, "src", "main.rs");
+        if (fs.existsSync(defaultBinPath)) {
+          binTargets.push({ name: packageName, path: defaultBinPath });
         }
       }
-      if (!isBin) {
-        targetType = "lib";
-        targetName = packageName;
+      let isBin = false;
+      for (const bin of binTargets) {
+        const binRelativePath = path.relative(cargoTomlDir, bin.path).replace(/\\/g, "/");
+        if (relativeFilePath === binRelativePath) {
+          isBin = true;
+          targetType = "bin";
+          targetName = bin.name;
+          break;
+        } else if (relativeFilePath.startsWith("src/")) {
+          isBin = true;
+          targetType = "bin";
+          targetName = bin.name;
+          break;
+        }
       }
-      const testFunctionFullNames = collectTestFunctionFullNames(filePath);
+      if (!hasLib) {
+        targetType = "bin";
+        targetName = binTargets[0].name;
+      }
       return {
         packageName,
         targetType,
@@ -3970,13 +3994,27 @@ function registerTestRunner(context) {
       return null;
     }
   }
-  function collectTestFunctionFullNames(filePath) {
+  function collectTestFunctionFullNames(filePath, cargoTomlDir) {
     const fileContent = fs.readFileSync(filePath, "utf8");
     const testNames = {};
     const lines = fileContent.split("\n");
+    const srcDir = path.join(cargoTomlDir, "src");
+    let relativeFilePath = path.relative(srcDir, filePath).replace(/\\/g, "/");
+    if (relativeFilePath.startsWith("../")) {
+      relativeFilePath = "";
+    }
+    let fileModulePath = relativeFilePath.replace(/\.rs$/, "").replace(/\/mod$/, "").replace(/\//g, "::");
+    if (fileModulePath === "main" || fileModulePath === "lib") {
+      fileModulePath = "";
+    }
     const moduleStack = [];
+    if (fileModulePath) {
+      fileModulePath.split("::").forEach((moduleName) => {
+        moduleStack.push({ name: moduleName, braceLevel: -1 });
+      });
+    }
     let braceLevel = 0;
-    let currentModulePath = "";
+    let currentModulePath = moduleStack.map((m) => m.name).join("::");
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       const moduleMatch = line.match(/^\s*mod\s+(\w+)\s*\{/);
@@ -4006,7 +4044,7 @@ function registerTestRunner(context) {
       }
       braceLevel += (line.match(/{/g) || []).length;
       braceLevel -= (line.match(/}/g) || []).length;
-      while (moduleStack.length > 0 && braceLevel < moduleStack[moduleStack.length - 1].braceLevel + 1) {
+      while (moduleStack.length > 0 && moduleStack[moduleStack.length - 1].braceLevel >= 0 && braceLevel < moduleStack[moduleStack.length - 1].braceLevel + 1) {
         moduleStack.pop();
         currentModulePath = moduleStack.map((m) => m.name).join("::");
       }
