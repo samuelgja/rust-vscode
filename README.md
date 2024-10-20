@@ -1,101 +1,110 @@
-# Bun for Visual Studio Code
+# Better Rust Tests for Visual Studio Code
 
-![Visual Studio Marketplace Version](https://img.shields.io/visual-studio-marketplace/v/oven.bun-vscode)
+The **Better Rust Tests** extension enhances your Rust development experience in Visual Studio Code by providing convenient ways to run and watch your Rust tests directly from the editor.
 
-<img align="right" src="https://user-images.githubusercontent.com/709451/182802334-d9c42afe-f35d-4a7b-86ea-9985f73f20c3.png" height="150px" style="float: right; padding: 30px;">
+![Extension Demo](assets/demo.gif)
 
-This extension adds support for using [Bun](https://bun.sh/) with Visual Studio Code. Bun is an all-in-one toolkit for JavaScript and TypeScript apps.
+## Features
 
-At its core is the _Bun runtime_, a fast JavaScript runtime designed as a drop-in replacement for Node.js. It's written in Zig and powered by JavaScriptCore under the hood, dramatically reducing startup times and memory usage.
+- **Run Tests:** Easily run individual test functions with a single click.
+- **Watch Tests:** Automatically rerun tests on file changes using `cargo watch`.
+- **Run Release Tests:** Execute tests in release mode for performance benchmarking.
+- **Watch Release Tests:** Continuously run release tests with live updates.
+- **Supports Async Tests:** Detects and runs async tests like `#[tokio::test]`.
+- **Module-Aware Test Discovery:** Accurately identifies test functions within modules.
+- **Customizable Commands:** Configure custom test commands and flags.
 
-<div align="center">
-  <a href="https://bun.sh/docs">Documentation</a>
-  <span>&nbsp;&nbsp;•&nbsp;&nbsp;</span>
-  <a href="https://discord.com/invite/CXdq2DP29u">Discord</a>
-  <span>&nbsp;&nbsp;•&nbsp;&nbsp;</span>
-  <a href="https://github.com/oven-sh/bun/issues/new">Issues</a>
-  <span>&nbsp;&nbsp;•&nbsp;&nbsp;</span>
-  <a href="https://github.com/oven-sh/bun/issues/159">Roadmap</a>
-  <br/>
-</div>
+## Installation
+
+1. **Install from the VS Code Marketplace:**
+
+   - Open Visual Studio Code.
+   - Go to the Extensions view by clicking on the Extensions icon in the Activity Bar (`Ctrl+Shift+X` or `Cmd+Shift+X`).
+   - Search for `Better Rust Tests`.
+   - Click **Install** on the extension named **Better Rust Tests** by **samuelgja**.
+
+2. **Install Required Tools:**
+
+   - Ensure you have Rust and Cargo installed. If not, install them from [rustup.rs](https://rustup.rs/).
+   - Install `cargo-watch` for watch mode functionality:
+
+     ```bash
+     cargo install cargo-watch
+     ```
+
+## Usage
+
+1. **Open a Rust Project:**
+
+   - Open a Rust project or workspace in Visual Studio Code.
+
+2. **Write Tests:**
+
+   - Create test functions using `#[test]` or `#[tokio::test]` attributes.
+
+     ```rust
+     #[cfg(test)]
+     mod tests {
+         use super::*;
+
+         #[test]
+         fn test_sync_function() {
+             assert_eq!(add(2, 2), 4);
+         }
+
+         #[tokio::test]
+         async fn test_async_function() {
+             assert_eq!(async_add(2, 2).await, 4);
+         }
+     }
+     ```
+
+3. **Run Tests:**
+
+   - Hover over a test function.
+   - Click on the **Run Test**, **Watch Test**, **Run Release Test**, or **Watch Release Test** CodeLens that appears above the function.
+
+     ![CodeLens Example](assets/codelens_example.png)
+
+4. **View Results:**
+
+   - The test results will appear in the integrated terminal.
+   - For watch mode, the tests will rerun automatically when you make changes.
 
 ## Configuration
 
-### `.vscode/launch.json`
+You can customize the extension's behavior through the following settings:
 
-You can use the following configurations to debug & test JavaScript and TypeScript files using Bun.
+### Settings
 
-```jsonc
+- **`rust.tests.filePattern`**
+
+  - **Type:** `string`
+  - **Default:** `**/*.rs`
+  - **Description:** Glob pattern to match Rust test files.
+
+- **`rust.tests.customFlag`**
+
+  - **Type:** `string`
+  - **Default:** `""`
+  - **Description:** Custom flags added to the end of the test command.
+
+- **`rust.tests.customScript`**
+
+  - **Type:** `string`
+  - **Default:** `"cargo test"`
+  - **Description:** Custom script to use instead of `cargo test`.
+
+### Example Configuration
+
+To customize the debounce time for watch mode or add additional flags:
+
+1. Open your VS Code settings (`Ctrl+,` or `Cmd+,`).
+2. Search for `Better Rust Tests`.
+3. Adjust the settings as needed.
+
+```json
 {
-  "version": "0.2.0",
-  "configurations": [
-    {
-      "type": "bun",
-      "request": "launch",
-      "name": "Debug Bun",
-
-      // The path to a JavaScript or TypeScript file to run.
-      "program": "${file}",
-
-      // The arguments to pass to the program, if any.
-      "args": [],
-
-      // The working directory of the program.
-      "cwd": "${workspaceFolder}",
-
-      // The environment variables to pass to the program.
-      "env": {},
-
-      // If the environment variables should not be inherited from the parent process.
-      "strictEnv": false,
-
-      // If the program should be run in watch mode.
-      // This is equivalent to passing `--watch` to the `bun` executable.
-      // You can also set this to "hot" to enable hot reloading using `--hot`.
-      "watchMode": false,
-
-      // If the debugger should stop on the first line of the program.
-      "stopOnEntry": false,
-
-      // If the debugger should be disabled. (for example, breakpoints will not be hit)
-      "noDebug": false,
-
-      // The path to the `bun` executable, defaults to your `PATH` environment variable.
-      "runtime": "bun",
-
-      // The arguments to pass to the `bun` executable, if any.
-      // Unlike `args`, these are passed to the executable itself, not the program.
-      "runtimeArgs": [],
-    },
-    {
-      "type": "bun",
-      "request": "attach",
-      "name": "Attach to Bun",
-
-      // The URL of the WebSocket inspector to attach to.
-      // This value can be retrieved by using `bun --inspect`.
-      "url": "ws://localhost:6499/",
-    }
-  ]
+    "rust.tests.customFlag": "--verbose",
+    "rust.tests.customScript": "cargo test"
 }
-```
-
-### `.vscode/settings.json`
-
-You can use the following configurations to customize the behavior of the Bun extension.
-
-```jsonc
-{
-  // The path to the `bun` executable.
-  "bun.runtime": "/path/to/bun",
-
-  // If support for Bun should be added to the default "JavaScript Debug Terminal".
-  "bun.debugTerminal.enabled": true,
-
-  // If the debugger should stop on the first line of the program.
-  "bun.debugTerminal.stopOnEntry": false,
-
-  // Glob pattern to match test files, defaults to `**/*.test.{js,ts,tsx,jsx}`.
-  "bun.test.filePattern": "**/*.test.{js,ts,tsx,jsx}",
-}
-```
