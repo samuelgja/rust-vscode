@@ -3869,14 +3869,17 @@ function registerTestRunner(context) {
     const cargoInfo = await getCargoInfo(fileName);
     if (cargoInfo) {
       const { packageName, targetType, targetName, cargoTomlDir } = cargoInfo;
-      let commandParts = [];
       const workspaceFolders = vscode.workspace.workspaceFolders;
       const workspaceRoot = workspaceFolders && workspaceFolders.length > 0 ? workspaceFolders[0].uri.fsPath : "";
-      if (cargoTomlDir && cargoTomlDir !== workspaceRoot) {
-        const cdCommand = process.platform === "win32" ? `cd /d "${cargoTomlDir}"` : `cd "${cargoTomlDir}"`;
-        commandParts.push(cdCommand);
-      }
       let command = customScript;
+      const manifestArg = ` --manifest-path "${path.join(
+        cargoTomlDir,
+        "Cargo.toml"
+      )}"`;
+      const isCargoTomlDirRoot = cargoTomlDir === workspaceRoot;
+      if (!isCargoTomlDirRoot && !watchMode) {
+        command += manifestArg;
+      }
       if (packageName) {
         command += ` --package ${packageName}`;
       }
@@ -3900,11 +3903,11 @@ function registerTestRunner(context) {
       if (watchMode) {
         let commandWithoutCargo = command.replace(/^cargo\s+/, "").trim();
         command = `cargo watch -x "${commandWithoutCargo}" -d 0.1`;
+        if (!isCargoTomlDirRoot) {
+          command = `cd "${cargoTomlDir}" && ${command}`;
+        }
       }
-      commandParts.push(command);
-      const commandSeparator = process.platform === "win32" ? "&&" : ";";
-      const fullCommand = commandParts.join(` ${commandSeparator} `);
-      activeTerminal.sendText(fullCommand);
+      activeTerminal.sendText(command, true);
     } else {
       vscode.window.showErrorMessage(
         "Could not find Cargo.toml to determine package information."

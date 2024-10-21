@@ -143,8 +143,6 @@ export function registerTestRunner(context: vscode.ExtensionContext) {
     if (cargoInfo) {
       const { packageName, targetType, targetName, cargoTomlDir } = cargoInfo;
 
-      let commandParts = [];
-
       // Get the workspace root
       const workspaceFolders = vscode.workspace.workspaceFolders;
       const workspaceRoot =
@@ -152,18 +150,17 @@ export function registerTestRunner(context: vscode.ExtensionContext) {
           ? workspaceFolders[0].uri.fsPath
           : "";
 
-      // Include cd command only if necessary
-      if (cargoTomlDir && cargoTomlDir !== workspaceRoot) {
-        // Use appropriate change directory command based on OS
-        const cdCommand =
-          process.platform === "win32"
-            ? `cd /d "${cargoTomlDir}"`
-            : `cd "${cargoTomlDir}"`;
-        commandParts.push(cdCommand);
-      }
-
       let command = customScript;
 
+      const manifestArg = ` --manifest-path "${path.join(
+        cargoTomlDir,
+        "Cargo.toml"
+      )}"`;
+      const isCargoTomlDirRoot = cargoTomlDir === workspaceRoot;
+      if (!isCargoTomlDirRoot && !watchMode) {
+        // Use appropriate change directory command based on OS
+        command += manifestArg;
+      }
       if (packageName) {
         command += ` --package ${packageName}`;
       }
@@ -199,16 +196,15 @@ export function registerTestRunner(context: vscode.ExtensionContext) {
       if (watchMode) {
         // Remove "cargo " from the beginning of the command, if present
         let commandWithoutCargo = command.replace(/^cargo\s+/, "").trim();
+
         command = `cargo watch -x "${commandWithoutCargo}" -d 0.1`;
+
+        if (!isCargoTomlDirRoot) {
+          command = `cd "${cargoTomlDir}" && ${command}`;
+        }
       }
 
-      commandParts.push(command);
-
-      // Join the command parts with '&&' (or ';' on Unix systems) to execute sequentially
-      const commandSeparator = process.platform === "win32" ? "&&" : ";";
-      const fullCommand = commandParts.join(` ${commandSeparator} `);
-
-      activeTerminal.sendText(fullCommand);
+      activeTerminal.sendText(command, true);
     } else {
       vscode.window.showErrorMessage(
         "Could not find Cargo.toml to determine package information."
