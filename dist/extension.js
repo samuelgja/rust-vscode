@@ -3788,300 +3788,232 @@ var fs = __toESM(require("fs"));
 var path = __toESM(require("path"));
 var toml = __toESM(require_toml());
 function findTests(document) {
-  const fileText = document.getText();
+  const text = document.getText();
+  const lines = text.split(/\r?\n/);
   const tests = [];
-  const testRegex = /^(?:[ \t]*\/\/.*\n)*[ \t]*#\[\s*(?:\w+::)?test\s*\][ \t]*(?:\n[ \t]*)*(?:async\s+)?fn\s+(\w+)/gm;
-  let match;
-  while ((match = testRegex.exec(fileText)) !== null) {
-    const testName = match[1];
-    const start = document.positionAt(match.index);
-    const end = document.positionAt(testRegex.lastIndex);
-    const range = new vscode.Range(start, end);
-    tests.push({ name: testName, range });
+  const attrRe = /^\s*#\[\s*(?:[\w:]+::)*test(?:\([^\]]*\))?\]\s*$/;
+  const fnRe = /^\s*(?:async\s+)?fn\s+(\w+)/;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^\s*\/\//.test(line))
+      continue;
+    if (!attrRe.test(line))
+      continue;
+    for (let j = i + 1; j < Math.min(i + 6, lines.length); j++) {
+      const m = fnRe.exec(lines[j]);
+      if (m) {
+        const name = m[1];
+        const startOffset = lines.slice(0, i).join("\n").length + (i > 0 ? 1 : 0);
+        const endOffset = lines.slice(0, j + 1).join("\n").length;
+        const start = document.positionAt(startOffset);
+        const end = document.positionAt(endOffset);
+        tests.push({ name, range: new vscode.Range(start, end) });
+        break;
+      }
+    }
   }
-  console.log(`Found ${tests.length} tests in ${document.fileName}`);
-  console.log(tests);
   return tests;
 }
 var TestCodeLensProvider = class {
   provideCodeLenses(document) {
     const codeLenses = [];
-    const tests = findTests(document);
-    for (const test of tests) {
-      const runTestCommand = {
-        title: "Run Test",
-        command: "extension.rust.tests.runTest",
-        arguments: [document.fileName, test.name]
-      };
-      const watchTestCommand = {
-        title: "Watch Test",
-        command: "extension.rust.tests.watchTest",
-        arguments: [document.fileName, test.name]
-      };
-      const runReleaseTestCommand = {
-        title: "Run Release Test",
-        command: "extension.rust.tests.runReleaseTest",
-        arguments: [document.fileName, test.name]
-      };
-      const watchReleaseTestCommand = {
-        title: "Watch Release Test",
-        command: "extension.rust.tests.watchReleaseTest",
-        arguments: [document.fileName, test.name]
-      };
-      codeLenses.push(new vscode.CodeLens(test.range, runTestCommand));
-      codeLenses.push(new vscode.CodeLens(test.range, watchTestCommand));
-      codeLenses.push(new vscode.CodeLens(test.range, runReleaseTestCommand));
-      codeLenses.push(new vscode.CodeLens(test.range, watchReleaseTestCommand));
+    for (const test of findTests(document)) {
+      for (const [title, cmd] of [
+        ["Run Test", "extension.rust.tests.runTest"],
+        ["Watch Test", "extension.rust.tests.watchTest"],
+        ["Run Release Test", "extension.rust.tests.runReleaseTest"],
+        ["Watch Release Test", "extension.rust.tests.watchReleaseTest"]
+      ]) {
+        codeLenses.push(
+          new vscode.CodeLens(test.range, {
+            title,
+            command: cmd,
+            arguments: [document.fileName, test.name]
+          })
+        );
+      }
     }
     return codeLenses;
   }
 };
-var DEFAULT_FILE_PATTERN = "**/*.rs";
-var activeTerminal = null;
 function registerTestCodeLens(context) {
-  const codeLensProvider = new TestCodeLensProvider();
-  const pattern = vscode.workspace.getConfiguration("rust.tests").get("filePattern", DEFAULT_FILE_PATTERN);
-  const options = { scheme: "file", pattern };
   context.subscriptions.push(
     vscode.languages.registerCodeLensProvider(
-      { ...options, language: "rust" },
-      codeLensProvider
+      { scheme: "file", pattern: "**/*.rs", language: "rust" },
+      new TestCodeLensProvider()
     )
   );
 }
+var activeTerminal = null;
 function registerTestRunner(context) {
   async function runTestCommand(fileName, testName, watchMode = false, releaseMode = false) {
-    const customFlag = vscode.workspace.getConfiguration("rust.tests").get("customFlag", "").trim();
-    const customScriptSetting = vscode.workspace.getConfiguration("rust.tests").get("customScript", "cargo test").trim();
-    const customScript = customScriptSetting.length ? customScriptSetting : "cargo test";
     if (!fileName) {
       const editor = vscode.window.activeTextEditor;
-      if (editor) {
+      if (editor)
         fileName = editor.document.fileName;
-      }
+      else
+        return;
     }
-    if (activeTerminal) {
-      activeTerminal.dispose();
-      activeTerminal = null;
-    }
+    activeTerminal?.dispose();
     activeTerminal = vscode.window.createTerminal("Cargo Test Runner");
     activeTerminal.show();
-    const cargoInfo = await getCargoInfo(fileName);
-    if (cargoInfo) {
-      const { packageName, targetType, targetName, cargoTomlDir } = cargoInfo;
-      const workspaceFolders = vscode.workspace.workspaceFolders;
-      const workspaceRoot = workspaceFolders && workspaceFolders.length > 0 ? workspaceFolders[0].uri.fsPath : "";
-      let command = customScript;
-      const manifestArg = ` --manifest-path "${path.join(
-        cargoTomlDir,
-        "Cargo.toml"
-      )}"`;
-      const isCargoTomlDirRoot = cargoTomlDir === workspaceRoot;
-      if (!isCargoTomlDirRoot && !watchMode) {
-        command += manifestArg;
-      }
-      if (packageName) {
-        command += ` --package ${packageName}`;
-      }
-      if (targetType === "bin") {
-        command += ` --bin ${targetName}`;
-      } else if (targetType === "lib") {
-        command += ` --lib`;
-      }
-      if (releaseMode) {
-        command += " --release";
-      }
-      if (customFlag.length) {
-        command += ` ${customFlag}`;
-      }
-      let testArgs = `--nocapture --exact`;
-      if (testName && testName.length) {
-        const fullTestName = cargoInfo.testFunctionFullNames[testName] || testName;
-        testArgs += ` ${fullTestName} --show-output`;
-      }
-      command += ` -- ${testArgs}`;
-      if (watchMode) {
-        let commandWithoutCargo = command.replace(/^cargo\s+/, "").trim();
-        command = `cargo watch -x "${commandWithoutCargo}" -d 0.1`;
-        if (!isCargoTomlDirRoot) {
-          command = `cd "${cargoTomlDir}" && ${command}`;
-        }
-      }
-      activeTerminal.sendText(command, true);
-    } else {
-      vscode.window.showErrorMessage(
-        "Could not find Cargo.toml to determine package information."
-      );
+    const info = await getCargoInfo(fileName);
+    if (!info) {
+      vscode.window.showErrorMessage("Could not find Cargo.toml");
+      return;
     }
+    let cmd = vscode.workspace.getConfiguration("rust.tests").get("customScript", "cargo test").trim();
+    const {
+      packageName,
+      targetType,
+      targetName,
+      cargoTomlDir,
+      testFunctionFullNames
+    } = info;
+    const workspaceFolders = vscode.workspace.workspaceFolders || [];
+    const workspaceRoot = workspaceFolders.length > 0 ? workspaceFolders[0].uri.fsPath : "";
+    if (cargoTomlDir !== workspaceRoot) {
+      cmd += ` --manifest-path "${path.join(cargoTomlDir, "Cargo.toml")}"`;
+    }
+    if (packageName)
+      cmd += ` --package ${packageName}`;
+    if (targetType === "bin")
+      cmd += ` --bin ${targetName}`;
+    else if (targetType === "lib")
+      cmd += ` --lib`;
+    if (releaseMode)
+      cmd += " --release";
+    let args = "--nocapture --exact";
+    if (testName) {
+      const full = testFunctionFullNames[testName] || testName;
+      args += ` ${full} --show-output`;
+    }
+    cmd += ` -- ${args}`;
+    if (watchMode) {
+      let core = cmd.replace(/^cargo\s+/, "");
+      cmd = `cargo watch -x "${core}" -d 0.1`;
+      if (cargoTomlDir !== workspaceRoot) {
+        cmd = `cd "${cargoTomlDir}" && ${cmd}`;
+      }
+    }
+    activeTerminal.sendText(cmd, true);
   }
   async function getCargoInfo(filePath) {
-    try {
-      let dir = path.dirname(filePath);
-      let cargoTomlPath = "";
-      while (true) {
-        const potentialCargoToml = path.join(dir, "Cargo.toml");
-        if (fs.existsSync(potentialCargoToml)) {
-          cargoTomlPath = potentialCargoToml;
-          break;
-        }
-        const parentDir = path.dirname(dir);
-        if (parentDir === dir) {
-          break;
-        }
-        dir = parentDir;
+    let dir = path.dirname(filePath);
+    let tomlPath = "";
+    while (true) {
+      const p = path.join(dir, "Cargo.toml");
+      if (fs.existsSync(p)) {
+        tomlPath = p;
+        break;
       }
-      if (!cargoTomlPath) {
-        return null;
-      }
-      const cargoTomlContent = fs.readFileSync(cargoTomlPath, "utf8");
-      const cargoConfig = toml.parse(cargoTomlContent);
-      const packageName = cargoConfig.package && cargoConfig.package.name;
-      const cargoTomlDir = path.dirname(cargoTomlPath);
-      const srcDir = path.join(cargoTomlDir, "src");
-      let hasLib = false;
-      if (cargoConfig.lib) {
-        hasLib = true;
-      } else {
-        if (fs.existsSync(path.join(srcDir, "lib.rs"))) {
-          hasLib = true;
-        }
-      }
-      const testFunctionFullNames = collectTestFunctionFullNames(
-        filePath,
-        cargoTomlDir
-      );
-      const relativeFilePath = path.relative(cargoTomlDir, filePath).replace(/\\/g, "/");
-      let targetType = "lib";
-      let targetName = packageName;
-      const binTargets = [];
-      if (cargoConfig.bin && Array.isArray(cargoConfig.bin)) {
-        for (const bin of cargoConfig.bin) {
-          const binName = bin.name;
-          const binPath = bin.path ? path.join(cargoTomlDir, bin.path) : path.join(cargoTomlDir, "src", "main.rs");
-          binTargets.push({ name: binName, path: binPath });
-        }
-      } else {
-        const defaultBinPath = path.join(cargoTomlDir, "src", "main.rs");
-        if (fs.existsSync(defaultBinPath)) {
-          binTargets.push({ name: packageName, path: defaultBinPath });
-        }
-      }
-      let isBin = false;
-      for (const bin of binTargets) {
-        const binRelativePath = path.relative(cargoTomlDir, bin.path).replace(/\\/g, "/");
-        if (relativeFilePath === binRelativePath) {
-          isBin = true;
-          targetType = "bin";
-          targetName = bin.name;
-          break;
-        } else if (relativeFilePath.startsWith("src/")) {
-          isBin = true;
-          targetType = "bin";
-          targetName = bin.name;
-          break;
-        }
-      }
-      if (!hasLib) {
-        targetType = "bin";
-        targetName = binTargets[0].name;
-      }
-      return {
-        packageName,
-        targetType,
-        targetName,
-        cargoTomlDir,
-        testFunctionFullNames
-      };
-    } catch (error) {
-      console.error("Error parsing Cargo.toml:", error);
-      return null;
+      const up = path.dirname(dir);
+      if (up === dir)
+        break;
+      dir = up;
     }
+    if (!tomlPath)
+      return null;
+    const cargoDir = path.dirname(tomlPath);
+    const cfg = toml.parse(fs.readFileSync(tomlPath, "utf8"));
+    const pkgName = cfg.package?.name;
+    const hasLib = !!cfg.lib || fs.existsSync(path.join(cargoDir, "src/lib.rs"));
+    const testFunctionFullNames = collectTestFunctionFullNames(
+      filePath,
+      cargoDir
+    );
+    let targetType = hasLib ? "lib" : "bin";
+    let targetName = pkgName;
+    const bins = [];
+    if (Array.isArray(cfg.bin)) {
+      for (const b of cfg.bin) {
+        bins.push({
+          name: b.name,
+          path: b.path ? path.join(cargoDir, b.path) : path.join(cargoDir, "src/main.rs")
+        });
+      }
+    } else if (fs.existsSync(path.join(cargoDir, "src/main.rs"))) {
+      bins.push({ name: pkgName, path: path.join(cargoDir, "src/main.rs") });
+    }
+    const rel = path.relative(cargoDir, filePath).replace(/\\/g, "/");
+    for (const b of bins) {
+      const bRel = path.relative(cargoDir, b.path).replace(/\\/g, "/");
+      if (rel === bRel || rel.startsWith("src/")) {
+        targetType = "bin";
+        targetName = b.name;
+        break;
+      }
+    }
+    return {
+      packageName: pkgName,
+      targetType,
+      targetName,
+      cargoTomlDir: cargoDir,
+      testFunctionFullNames
+    };
   }
   function collectTestFunctionFullNames(filePath, cargoTomlDir) {
-    const fileContent = fs.readFileSync(filePath, "utf8");
-    const testNames = {};
-    const lines = fileContent.split("\n");
-    const srcDir = path.join(cargoTomlDir, "src");
-    let relativeFilePath = path.relative(srcDir, filePath).replace(/\\/g, "/");
-    if (relativeFilePath.startsWith("../")) {
-      relativeFilePath = "";
-    }
-    let fileModulePath = relativeFilePath.replace(/\.rs$/, "").replace(/\/mod$/, "").replace(/\//g, "::");
-    if (fileModulePath === "main" || fileModulePath === "lib") {
-      fileModulePath = "";
-    }
+    const content = fs.readFileSync(filePath, "utf8");
+    const lines = content.split(/\r?\n/);
+    const attrRe = /^\s*#\[\s*(?:[\w:]+::)*test(?:\([^\]]*\))?\]\s*$/;
     const moduleStack = [];
-    if (fileModulePath) {
-      fileModulePath.split("::").forEach((moduleName) => {
-        moduleStack.push({ name: moduleName, braceLevel: -1 });
-      });
+    const srcDir = path.join(cargoTomlDir, "src");
+    let relPath = path.relative(srcDir, filePath).replace(/\\/g, "/");
+    let fileMod = "";
+    if (!relPath.startsWith("..")) {
+      fileMod = relPath.replace(/\.rs$/, "").replace(/\/mod$/, "").replace(/\//g, "::");
+      if (fileMod === "main" || fileMod === "lib")
+        fileMod = "";
+      else
+        fileMod.split("::").forEach((n) => moduleStack.push({ name: n, braceLevel: -1 }));
     }
-    let braceLevel = 0;
-    let currentModulePath = moduleStack.map((m) => m.name).join("::");
+    let brace = 0;
+    const result = {};
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      const moduleMatch = line.match(/^\s*mod\s+(\w+)\s*\{/);
-      if (moduleMatch) {
-        const moduleName = moduleMatch[1];
-        moduleStack.push({ name: moduleName, braceLevel });
-        currentModulePath = moduleStack.map((m) => m.name).join("::");
+      const modM = line.match(/^\s*mod\s+(\w+)\s*\{/);
+      if (modM) {
+        moduleStack.push({ name: modM[1], braceLevel: brace });
       }
-      const testMatch = line.match(/^\s*#\[\s*(?:\w+::)?test\s*\]/);
-      if (testMatch) {
+      if (attrRe.test(line)) {
         let j = i + 1;
-        while (j < lines.length && lines[j].trim() === "") {
+        while (j < lines.length && lines[j].trim() === "")
           j++;
-        }
         if (j < lines.length) {
-          const fnLine = lines[j];
-          const fnMatch = fnLine.match(/^\s*(?:async\s+)?fn\s+(\w+)/);
-          if (fnMatch) {
-            const testFunctionName = fnMatch[1];
-            let fullTestName = testFunctionName;
-            if (currentModulePath) {
-              fullTestName = `${currentModulePath}::${testFunctionName}`;
-            }
-            testNames[testFunctionName] = fullTestName;
+          const fnM = lines[j].match(/^\s*(?:async\s+)?fn\s+(\w+)/);
+          if (fnM) {
+            const name = fnM[1];
+            const full = [...moduleStack.map((m) => m.name)].filter((n) => n).join("::");
+            result[name] = full ? `${full}::${name}` : name;
           }
         }
       }
-      braceLevel += (line.match(/{/g) || []).length;
-      braceLevel -= (line.match(/}/g) || []).length;
-      while (moduleStack.length > 0 && moduleStack[moduleStack.length - 1].braceLevel >= 0 && braceLevel < moduleStack[moduleStack.length - 1].braceLevel + 1) {
+      brace += (line.match(/{/g) || []).length;
+      brace -= (line.match(/}/g) || []).length;
+      while (moduleStack.length && moduleStack[moduleStack.length - 1].braceLevel >= 0 && brace < moduleStack[moduleStack.length - 1].braceLevel + 1) {
         moduleStack.pop();
-        currentModulePath = moduleStack.map((m) => m.name).join("::");
       }
     }
-    return testNames;
+    return result;
   }
-  const runTest = vscode.commands.registerCommand(
-    "extension.rust.tests.runTest",
-    async (fileName, testName) => {
-      runTestCommand(fileName, testName, false, false);
-    }
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "extension.rust.tests.runTest",
+      (f, t) => runTestCommand(f, t, false, false)
+    ),
+    vscode.commands.registerCommand(
+      "extension.rust.tests.watchTest",
+      (f, t) => runTestCommand(f, t, true, false)
+    ),
+    vscode.commands.registerCommand(
+      "extension.rust.tests.runReleaseTest",
+      (f, t) => runTestCommand(f, t, false, true)
+    ),
+    vscode.commands.registerCommand(
+      "extension.rust.tests.watchReleaseTest",
+      (f, t) => runTestCommand(f, t, true, true)
+    )
   );
-  const watchTest = vscode.commands.registerCommand(
-    "extension.rust.tests.watchTest",
-    async (fileName, testName) => {
-      runTestCommand(fileName, testName, true, false);
-    }
-  );
-  const runReleaseTest = vscode.commands.registerCommand(
-    "extension.rust.tests.runReleaseTest",
-    async (fileName, testName) => {
-      runTestCommand(fileName, testName, false, true);
-    }
-  );
-  const watchReleaseTest = vscode.commands.registerCommand(
-    "extension.rust.tests.watchReleaseTest",
-    async (fileName, testName) => {
-      runTestCommand(fileName, testName, true, true);
-    }
-  );
-  context.subscriptions.push(runTest);
-  context.subscriptions.push(watchTest);
-  context.subscriptions.push(runReleaseTest);
-  context.subscriptions.push(watchReleaseTest);
 }
 
 // src/extension.ts
