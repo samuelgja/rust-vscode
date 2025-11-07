@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
-import * as toml from "toml";
+import { parse } from "smol-toml";
 
 /* ───────────────────────── helpers ───────────────────────── */
 
@@ -149,7 +149,7 @@ async function getCargoInfo(filePath: string): Promise<CargoInfo | null> {
   if (!tomlPath) return null;
 
   const cargoDir = path.dirname(tomlPath);
-  const cfg = toml.parse(fs.readFileSync(tomlPath, "utf8"));
+  const cfg: Record<string, any> = parse(fs.readFileSync(tomlPath, "utf8"));
   const pkgName: string | undefined = cfg.package?.name;
   const hasLib = !!cfg.lib || fs.existsSync(path.join(cargoDir, "src/lib.rs"));
 

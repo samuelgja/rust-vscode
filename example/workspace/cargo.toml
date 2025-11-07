@@ -6,3 +6,6 @@ members = ["packages/some_lib"
 
 
 
+
+[workspace.dependencies]
+anyhow = "*"

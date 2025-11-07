@@ -106,6 +106,6 @@
     ]
   },
   "dependencies": {
-    "toml": "^3.0.0"
+    "smol-toml": "^1.4.2"
   }
 }
