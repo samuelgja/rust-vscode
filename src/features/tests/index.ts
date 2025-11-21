@@ -130,6 +130,16 @@ function createTerminal(name: string): vscode.Terminal {
   return activeTerminal;
 }
 
+/**
+ * Safely single-quote a string for a POSIX shell.
+ * Used for `cargo watch -x <subcommand>`.
+ */
+function shellSingleQuote(s: string): string {
+  if (s.length === 0) return "''";
+  // turn   foo'bar   into   'foo'\''bar'
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
 /* ───────────────────── cargo.toml parsing ────────────────── */
 
 async function getCargoInfo(filePath: string): Promise<CargoInfo | null> {
@@ -268,14 +278,18 @@ async function runTestCommand(
   const term = createTerminal("Cargo Test Runner");
 
   if (watch) {
+    // Strip leading `cargo ` and safely single-quote for `-x`
     const core = cargoCmd.replace(/^cargo\s+/, "");
+    const quotedCore = shellSingleQuote(core);
+
     const workspaceRoot =
       vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "";
     const chdir =
       info.cargoTomlDir !== workspaceRoot
         ? `cd "${info.cargoTomlDir}" && `
         : "";
-    term.sendText(`${chdir}cargo watch -x "${core}" -d 0.1`, true);
+
+    term.sendText(`${chdir}cargo watch -x ${quotedCore} -d 0.1`, true);
   } else {
     term.sendText(cargoCmd, true);
   }

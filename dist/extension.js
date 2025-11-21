@@ -818,6 +818,10 @@ function createTerminal(name) {
   activeTerminal.show();
   return activeTerminal;
 }
+function shellSingleQuote(s) {
+  if (s.length === 0) return "''";
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
 async function getCargoInfo(filePath) {
   let dir = path.dirname(filePath);
   let tomlPath = "";
@@ -913,9 +917,10 @@ async function runTestCommand(fileName, testName, watch = false, release = false
   const term = createTerminal("Cargo Test Runner");
   if (watch) {
     const core = cargoCmd.replace(/^cargo\s+/, "");
+    const quotedCore = shellSingleQuote(core);
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "";
     const chdir = info.cargoTomlDir !== workspaceRoot ? `cd "${info.cargoTomlDir}" && ` : "";
-    term.sendText(`${chdir}cargo watch -x "${core}" -d 0.1`, true);
+    term.sendText(`${chdir}cargo watch -x ${quotedCore} -d 0.1`, true);
   } else {
     term.sendText(cargoCmd, true);
   }
