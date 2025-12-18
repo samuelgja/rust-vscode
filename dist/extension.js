@@ -813,25 +813,54 @@ function buildCargoTestCommand(info, opts) {
     workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "";
   }
   let cmd = customScript.trim();
-  if (info.cargoTomlDir !== workspaceRoot) {
-    cmd += ` --manifest-path "${path.join(info.cargoTomlDir, "Cargo.toml")}"`;
+  const isNextest = cmd.includes("nextest");
+  if (isNextest) {
+    if (!cmd.includes(" run")) {
+      cmd = cmd.replace(/cargo\s+nextest/, "cargo nextest run");
+    }
+    if (info.cargoTomlDir !== workspaceRoot) {
+      cmd += ` --manifest-path "${path.join(info.cargoTomlDir, "Cargo.toml")}"`;
+    }
+    if (info.packageName) cmd += ` --package ${info.packageName}`;
+    if (info.targetType === "bin") cmd += ` --bin ${info.targetName}`;
+    else if (info.targetType === "lib") cmd += ` --lib`;
+    if (opts.release) cmd += " --release";
+    if (opts.extraArgs?.trim()) cmd += ` ${opts.extraArgs.trim()}`;
+  } else {
+    if (info.cargoTomlDir !== workspaceRoot) {
+      cmd += ` --manifest-path "${path.join(info.cargoTomlDir, "Cargo.toml")}"`;
+    }
+    if (info.packageName) cmd += ` --package ${info.packageName}`;
+    if (info.targetType === "bin") cmd += ` --bin ${info.targetName}`;
+    else if (info.targetType === "lib") cmd += ` --lib`;
+    if (opts.release) cmd += " --release";
+    if (opts.extraArgs?.trim()) cmd += ` ${opts.extraArgs.trim()}`;
   }
-  if (info.packageName) cmd += ` --package ${info.packageName}`;
-  if (info.targetType === "bin") cmd += ` --bin ${info.targetName}`;
-  else if (info.targetType === "lib") cmd += ` --lib`;
-  if (opts.release) cmd += " --release";
-  if (opts.extraArgs?.trim()) cmd += ` ${opts.extraArgs.trim()}`;
   if (opts.testName) {
     if (info.targetType === "lib" || info.targetType === "test") {
       const testName = opts.testName;
-      cmd += ` ${testName}`;
-      return `${cmd} -- --nocapture --show-output`;
+      if (isNextest) {
+        cmd += ` ${testName}`;
+        return `${cmd} --nocapture`;
+      } else {
+        cmd += ` ${testName}`;
+        return `${cmd} -- --nocapture --show-output`;
+      }
     } else {
       const full = info.testFunctionFullNames[opts.testName] ?? opts.testName;
-      return `${cmd} -- --nocapture --exact ${full} --show-output`;
+      if (isNextest) {
+        cmd += ` ${full}`;
+        return `${cmd} --nocapture`;
+      } else {
+        return `${cmd} -- --nocapture --exact ${full} --show-output`;
+      }
     }
   }
-  return `${cmd} -- --nocapture`;
+  if (isNextest) {
+    return `${cmd} --nocapture`;
+  } else {
+    return `${cmd} -- --nocapture`;
+  }
 }
 function createTerminal(name) {
   activeTerminal?.dispose();

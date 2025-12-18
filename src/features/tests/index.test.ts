@@ -578,6 +578,47 @@ describe("buildCargoTestCommand", () => {
 
     expect(cmd).toMatch(/^cargo test --no-fail-fast/);
   });
+
+  test("should handle nextest command structure", () => {
+    const cmd = buildCargoTestCommand(
+      baseInfo,
+      {
+        testName: "test_null_literal",
+        release: false,
+        workspaceRoot: "/path/to/workspace",
+        customScript: "cargo nextest",
+      }
+    );
+
+    // Should include "run" subcommand
+    expect(cmd).toContain("cargo nextest run");
+    // Should have --package and --lib
+    expect(cmd).toContain("--package my_package");
+    expect(cmd).toContain("--lib");
+    // Should have test name
+    expect(cmd).toContain("test_null_literal");
+    // Nextest uses --nocapture directly, not after --
+    expect(cmd).toContain("--nocapture");
+    expect(cmd).not.toContain("-- --nocapture");
+    expect(cmd).not.toContain("--show-output");
+  });
+
+  test("should handle nextest with run already in script", () => {
+    const cmd = buildCargoTestCommand(
+      baseInfo,
+      {
+        testName: "test_something",
+        release: false,
+        workspaceRoot: "/path/to/workspace",
+        customScript: "cargo nextest run",
+      }
+    );
+
+    // Should not duplicate "run"
+    expect(cmd).toMatch(/cargo nextest run/);
+    const runCount = (cmd.match(/run/g) || []).length;
+    expect(runCount).toBe(1);
+  });
 });
 
 describe("Integration scenarios", () => {

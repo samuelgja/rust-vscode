@@ -125,18 +125,39 @@ export function buildCargoTestCommand(
   }
 
   let cmd = customScript.trim();
+  const isNextest = cmd.includes("nextest");
 
-  if (info.cargoTomlDir !== workspaceRoot) {
-    cmd += ` --manifest-path "${path.join(info.cargoTomlDir, "Cargo.toml")}"`;
+  // For nextest, we need to use "run" subcommand
+  // Structure: cargo nextest run [flags] [filter]
+  // ALL flags must come AFTER "run"
+  if (isNextest) {
+    // Ensure "run" subcommand is present (only if not already there)
+    if (!cmd.includes(" run")) {
+      cmd = cmd.replace(/cargo\s+nextest/, "cargo nextest run");
+    }
+
+    // All flags come after "run"
+    if (info.cargoTomlDir !== workspaceRoot) {
+      cmd += ` --manifest-path "${path.join(info.cargoTomlDir, "Cargo.toml")}"`;
+    }
+    if (info.packageName) cmd += ` --package ${info.packageName}`;
+    if (info.targetType === "bin") cmd += ` --bin ${info.targetName}`;
+    else if (info.targetType === "lib") cmd += ` --lib`;
+    if (opts.release) cmd += " --release";
+    if (opts.extraArgs?.trim()) cmd += ` ${opts.extraArgs.trim()}`;
+  } else {
+    // Standard cargo test structure
+    if (info.cargoTomlDir !== workspaceRoot) {
+      cmd += ` --manifest-path "${path.join(info.cargoTomlDir, "Cargo.toml")}"`;
+    }
+    if (info.packageName) cmd += ` --package ${info.packageName}`;
+    // Integration tests in tests/ don't need --lib or --bin
+    if (info.targetType === "bin") cmd += ` --bin ${info.targetName}`;
+    else if (info.targetType === "lib") cmd += ` --lib`;
+    // targetType === "test" means integration test, no flag needed
+    if (opts.release) cmd += " --release";
+    if (opts.extraArgs?.trim()) cmd += ` ${opts.extraArgs.trim()}`;
   }
-  if (info.packageName) cmd += ` --package ${info.packageName}`;
-  // Integration tests in tests/ don't need --lib or --bin
-  if (info.targetType === "bin") cmd += ` --bin ${info.targetName}`;
-  else if (info.targetType === "lib") cmd += ` --lib`;
-  // targetType === "test" means integration test, no flag needed
-  if (opts.release) cmd += " --release";
-
-  if (opts.extraArgs?.trim()) cmd += ` ${opts.extraArgs.trim()}`;
 
   // For --lib and integration tests: test name goes before -- (just function name, not full path)
   // For --bin tests: full path goes after -- with --exact
@@ -146,17 +167,33 @@ export function buildCargoTestCommand(
       // Always use just the function name (cargo will pattern match)
       // Cargo test with --lib doesn't accept full module paths, only function names
       const testName = opts.testName;
-      cmd += ` ${testName}`;
-      return `${cmd} -- --nocapture --show-output`;
+      if (isNextest) {
+        // Nextest uses test name as a filter pattern (no -- separator needed)
+        // Nextest flags like --nocapture go directly, not after --
+        cmd += ` ${testName}`;
+        return `${cmd} --nocapture`;
+      } else {
+        cmd += ` ${testName}`;
+        return `${cmd} -- --nocapture --show-output`;
+      }
     } else {
       // For bin tests: full path after -- with --exact
       const full = info.testFunctionFullNames[opts.testName] ?? opts.testName;
-      return `${cmd} -- --nocapture --exact ${full} --show-output`;
+      if (isNextest) {
+        cmd += ` ${full}`;
+        return `${cmd} --nocapture`;
+      } else {
+        return `${cmd} -- --nocapture --exact ${full} --show-output`;
+      }
     }
   }
 
   // No specific test, just run all
-  return `${cmd} -- --nocapture`;
+  if (isNextest) {
+    return `${cmd} --nocapture`;
+  } else {
+    return `${cmd} -- --nocapture`;
+  }
 }
 
 /**
