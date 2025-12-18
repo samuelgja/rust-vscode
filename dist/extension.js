@@ -35,7 +35,6 @@ __export(extension_exports, {
 module.exports = __toCommonJS(extension_exports);
 
 // src/features/tests/index.ts
-var vscode = __toESM(require("vscode"));
 var fs = __toESM(require("fs"));
 var path = __toESM(require("path"));
 
@@ -741,6 +740,12 @@ function parse(toml, { maxDepth = 1e3, integersAsBigInt } = {}) {
 }
 
 // src/features/tests/index.ts
+var vscode;
+try {
+  vscode = require("vscode");
+} catch {
+  vscode = void 0;
+}
 function findTests(doc) {
   const lines = doc.getText().split(/\r?\n/);
   const tests = [];
@@ -794,23 +799,39 @@ function registerTestCodeLens(ctx) {
 }
 var activeTerminal = null;
 function buildCargoTestCommand(info, opts) {
-  const cfg = vscode.workspace.getConfiguration("rust.tests");
-  let cmd = cfg.get("customScript", "cargo test").trim();
-  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "";
+  let customScript;
+  let workspaceRoot;
+  if (opts.customScript !== void 0 || opts.workspaceRoot !== void 0) {
+    customScript = opts.customScript ?? "cargo test";
+    workspaceRoot = opts.workspaceRoot ?? "";
+  } else {
+    if (!vscode) {
+      throw new Error("vscode API not available");
+    }
+    const cfg = vscode.workspace.getConfiguration("rust.tests");
+    customScript = cfg.get("customScript", "cargo test").trim();
+    workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "";
+  }
+  let cmd = customScript.trim();
   if (info.cargoTomlDir !== workspaceRoot) {
     cmd += ` --manifest-path "${path.join(info.cargoTomlDir, "Cargo.toml")}"`;
   }
   if (info.packageName) cmd += ` --package ${info.packageName}`;
   if (info.targetType === "bin") cmd += ` --bin ${info.targetName}`;
-  else cmd += ` --lib`;
+  else if (info.targetType === "lib") cmd += ` --lib`;
   if (opts.release) cmd += " --release";
   if (opts.extraArgs?.trim()) cmd += ` ${opts.extraArgs.trim()}`;
-  let testArgs = "--nocapture --exact";
   if (opts.testName) {
-    const full = info.testFunctionFullNames[opts.testName] ?? opts.testName;
-    testArgs += ` ${full} --show-output`;
+    if (info.targetType === "lib" || info.targetType === "test") {
+      const testName = opts.testName;
+      cmd += ` ${testName}`;
+      return `${cmd} -- --nocapture --show-output`;
+    } else {
+      const full = info.testFunctionFullNames[opts.testName] ?? opts.testName;
+      return `${cmd} -- --nocapture --exact ${full} --show-output`;
+    }
   }
-  return `${cmd} -- ${testArgs}`;
+  return `${cmd} -- --nocapture`;
 }
 function createTerminal(name) {
   activeTerminal?.dispose();
@@ -858,12 +879,22 @@ async function getCargoInfo(filePath) {
     bins.push({ name: pkgName, path: path.join(cargoDir, "src/main.rs") });
   }
   const rel = path.relative(cargoDir, filePath).replace(/\\/g, "/");
-  for (const b of bins) {
-    const bRel = path.relative(cargoDir, b.path).replace(/\\/g, "/");
-    if (rel === bRel || rel.startsWith("src/")) {
-      targetType = "bin";
-      targetName = b.name;
-      break;
+  if (rel.startsWith("tests/")) {
+    targetType = "test";
+    targetName = pkgName;
+  } else {
+    let isBinaryFile = false;
+    for (const b of bins) {
+      const bRel = path.relative(cargoDir, b.path).replace(/\\/g, "/");
+      if (rel === bRel) {
+        targetType = "bin";
+        targetName = b.name;
+        isBinaryFile = true;
+        break;
+      }
+    }
+    if (!isBinaryFile && rel.startsWith("src/")) {
+      targetType = "lib";
     }
   }
   return {
@@ -878,10 +909,16 @@ function collectTestFunctionFullNames(filePath, cargoDir) {
   const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
   const attrRe = /^\s*#\[\s*(?:[\w:]+::)*test(?:\([^\]]*\))?\]\s*$/;
   const moduleStack = [];
-  const srcDir = path.join(cargoDir, "src");
-  const relPath = path.relative(srcDir, filePath).replace(/\\/g, "/");
-  if (!relPath.startsWith("..")) {
-    relPath.replace(/\.rs$/, "").replace(/\/mod$/, "").replace(/\//g, "::").split("::").filter(Boolean).forEach((n) => moduleStack.push({ name: n, braceLevel: -1 }));
+  const relPath = path.relative(cargoDir, filePath).replace(/\\/g, "/");
+  if (relPath.startsWith("tests/")) {
+    const testRelPath = relPath.replace(/^tests\//, "").replace(/\.rs$/, "");
+    testRelPath.replace(/\/mod$/, "").replace(/\//g, "::").split("::").filter(Boolean).forEach((n) => moduleStack.push({ name: n, braceLevel: -1 }));
+  } else {
+    const srcDir = path.join(cargoDir, "src");
+    const srcRelPath = path.relative(srcDir, filePath).replace(/\\/g, "/");
+    if (!srcRelPath.startsWith("..")) {
+      srcRelPath.replace(/\.rs$/, "").replace(/\/mod$/, "").replace(/\//g, "::").split("::").filter(Boolean).forEach((n) => moduleStack.push({ name: n, braceLevel: -1 }));
+    }
   }
   const result = {};
   let brace = 0;

@@ -1,17 +1,27 @@
-import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
 import { parse } from "smol-toml";
+import type * as vscodeType from "vscode";
+
+// Import vscode - use try/catch for runtime, but TypeScript will see the type
+let vscode: typeof vscodeType;
+try {
+  vscode = require("vscode");
+} catch {
+  // In test environments, vscode may not be available
+  // We'll handle this in functions that use it
+  vscode = undefined as any;
+}
 
 /* ───────────────────────── helpers ───────────────────────── */
 
 interface TestInfo {
   name: string;
-  range: vscode.Range;
+  range: vscodeType.Range;
 }
 
 /** Find all #[test]-annotated (incl. parameterised) functions, incl. async */
-function findTests(doc: vscode.TextDocument): TestInfo[] {
+function findTests(doc: vscodeType.TextDocument): TestInfo[] {
   const lines = doc.getText().split(/\r?\n/);
   const tests: TestInfo[] = [];
 
@@ -30,7 +40,7 @@ function findTests(doc: vscode.TextDocument): TestInfo[] {
           lines.slice(0, i).join("\n").length + (i ? 1 : 0)
         );
         const end = doc.positionAt(lines.slice(0, j + 1).join("\n").length);
-        tests.push({ name, range: new vscode.Range(start, end) });
+        tests.push({ name, range: new vscode!.Range(start, end) });
         break;
       }
     }
@@ -38,8 +48,8 @@ function findTests(doc: vscode.TextDocument): TestInfo[] {
   return tests;
 }
 
-class TestCodeLensProvider implements vscode.CodeLensProvider {
-  provideCodeLenses(doc: vscode.TextDocument): vscode.CodeLens[] {
+class TestCodeLensProvider implements vscodeType.CodeLensProvider {
+  provideCodeLenses(doc: vscodeType.TextDocument): vscodeType.CodeLens[] {
     const actions: Array<[string, string]> = [
       ["Run Test", "extension.rust.tests.runTest"],
       ["Watch Test", "extension.rust.tests.watchTest"],
@@ -50,7 +60,7 @@ class TestCodeLensProvider implements vscode.CodeLensProvider {
     return findTests(doc).flatMap(({ name, range }) =>
       actions.map(
         ([title, cmd]) =>
-          new vscode.CodeLens(range, {
+          new vscode!.CodeLens(range, {
             title,
             command: cmd,
             arguments: [doc.fileName, name],
@@ -60,7 +70,7 @@ class TestCodeLensProvider implements vscode.CodeLensProvider {
   }
 }
 
-export function registerTestCodeLens(ctx: vscode.ExtensionContext) {
+export function registerTestCodeLens(ctx: vscodeType.ExtensionContext) {
   ctx.subscriptions.push(
     vscode.languages.registerCodeLensProvider(
       { scheme: "file", pattern: "**/*.rs", language: "rust" },
@@ -71,12 +81,12 @@ export function registerTestCodeLens(ctx: vscode.ExtensionContext) {
 
 /* ────────────────────── runner core ─────────────────────── */
 
-let activeTerminal: vscode.Terminal | null = null;
+let activeTerminal: vscodeType.Terminal | null = null;
 
 /** All info needed to build a cargo test command */
-interface CargoInfo {
+export interface CargoInfo {
   packageName?: string;
-  targetType: "bin" | "lib";
+  targetType: "bin" | "lib" | "test";
   targetName: string;
   cargoTomlDir: string;
   testFunctionFullNames: Record<string, string>;
@@ -86,44 +96,74 @@ interface CargoInfo {
  * Build the `cargo test … -- <args>` part.
  * Shared by normal run/watch and Samply profiling.
  */
-function buildCargoTestCommand(
+export function buildCargoTestCommand(
   info: CargoInfo,
   opts: {
     testName?: string;
     release: boolean;
     extraArgs?: string; // e.g. custom `--features`
+    workspaceRoot?: string;
+    customScript?: string;
   }
 ): string {
-  const cfg = vscode.workspace.getConfiguration("rust.tests");
-  let cmd = cfg.get<string>("customScript", "cargo test").trim();
+  // In production, get from vscode config; in tests, use provided or default
+  let customScript: string;
+  let workspaceRoot: string;
 
-  const workspaceRoot =
-    vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "";
+  if (opts.customScript !== undefined || opts.workspaceRoot !== undefined) {
+    // Test mode - use provided values
+    customScript = opts.customScript ?? "cargo test";
+    workspaceRoot = opts.workspaceRoot ?? "";
+  } else {
+    // Production mode - use vscode config
+    if (!vscode) {
+      throw new Error("vscode API not available");
+    }
+    const cfg = vscode.workspace.getConfiguration("rust.tests");
+    customScript = cfg.get<string>("customScript", "cargo test").trim();
+    workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "";
+  }
+
+  let cmd = customScript.trim();
 
   if (info.cargoTomlDir !== workspaceRoot) {
     cmd += ` --manifest-path "${path.join(info.cargoTomlDir, "Cargo.toml")}"`;
   }
   if (info.packageName) cmd += ` --package ${info.packageName}`;
+  // Integration tests in tests/ don't need --lib or --bin
   if (info.targetType === "bin") cmd += ` --bin ${info.targetName}`;
-  else cmd += ` --lib`;
+  else if (info.targetType === "lib") cmd += ` --lib`;
+  // targetType === "test" means integration test, no flag needed
   if (opts.release) cmd += " --release";
 
   if (opts.extraArgs?.trim()) cmd += ` ${opts.extraArgs.trim()}`;
 
-  // test-specific arguments
-  let testArgs = "--nocapture --exact";
+  // For --lib and integration tests: test name goes before -- (just function name, not full path)
+  // For --bin tests: full path goes after -- with --exact
   if (opts.testName) {
-    const full = info.testFunctionFullNames[opts.testName] ?? opts.testName;
-    testArgs += ` ${full} --show-output`;
+    if (info.targetType === "lib" || info.targetType === "test") {
+      // For lib and integration tests: test name before --
+      // Always use just the function name (cargo will pattern match)
+      // Cargo test with --lib doesn't accept full module paths, only function names
+      const testName = opts.testName;
+      cmd += ` ${testName}`;
+      return `${cmd} -- --nocapture --show-output`;
+    } else {
+      // For bin tests: full path after -- with --exact
+      const full = info.testFunctionFullNames[opts.testName] ?? opts.testName;
+      return `${cmd} -- --nocapture --exact ${full} --show-output`;
+    }
   }
-  return `${cmd} -- ${testArgs}`;
+
+  // No specific test, just run all
+  return `${cmd} -- --nocapture`;
 }
 
 /**
  * Ensure there’s a visible terminal named “Cargo Test Runner”
  * (past one is disposed each invocation).
  */
-function createTerminal(name: string): vscode.Terminal {
+function createTerminal(name: string): vscodeType.Terminal {
   activeTerminal?.dispose();
   activeTerminal = vscode.window.createTerminal(name);
   activeTerminal.show();
@@ -142,7 +182,9 @@ function shellSingleQuote(s: string): string {
 
 /* ───────────────────── cargo.toml parsing ────────────────── */
 
-async function getCargoInfo(filePath: string): Promise<CargoInfo | null> {
+export async function getCargoInfo(
+  filePath: string
+): Promise<CargoInfo | null> {
   // Ascend tree to locate Cargo.toml
   let dir = path.dirname(filePath);
   let tomlPath = "";
@@ -169,8 +211,8 @@ async function getCargoInfo(filePath: string): Promise<CargoInfo | null> {
     cargoDir
   );
 
-  // Determine binary / lib target
-  let targetType: "bin" | "lib" = hasLib ? "lib" : "bin";
+  // Determine binary / lib / integration test target
+  let targetType: "bin" | "lib" | "test" = hasLib ? "lib" : "bin";
   let targetName = pkgName!;
   const bins: Array<{ name: string; path: string }> = [];
 
@@ -186,12 +228,28 @@ async function getCargoInfo(filePath: string): Promise<CargoInfo | null> {
   }
 
   const rel = path.relative(cargoDir, filePath).replace(/\\/g, "/");
-  for (const b of bins) {
-    const bRel = path.relative(cargoDir, b.path).replace(/\\/g, "/");
-    if (rel === bRel || rel.startsWith("src/")) {
-      targetType = "bin";
-      targetName = b.name;
-      break;
+
+  // Check if this is an integration test in tests/ directory
+  if (rel.startsWith("tests/")) {
+    targetType = "test";
+    targetName = pkgName!;
+  } else {
+    // Check if this is a binary file
+    let isBinaryFile = false;
+    for (const b of bins) {
+      const bRel = path.relative(cargoDir, b.path).replace(/\\/g, "/");
+      // Only use --bin if the file is actually the binary file itself
+      if (rel === bRel) {
+        targetType = "bin";
+        targetName = b.name;
+        isBinaryFile = true;
+        break;
+      }
+    }
+    // If file is in src/ but not a binary file, treat as lib even if no lib.rs exists
+    // This handles cases like harness.rs in binary crates
+    if (!isBinaryFile && rel.startsWith("src/")) {
+      targetType = "lib";
     }
   }
 
@@ -204,7 +262,7 @@ async function getCargoInfo(filePath: string): Promise<CargoInfo | null> {
   };
 }
 
-function collectTestFunctionFullNames(
+export function collectTestFunctionFullNames(
   filePath: string,
   cargoDir: string
 ): Record<string, string> {
@@ -212,16 +270,32 @@ function collectTestFunctionFullNames(
   const attrRe = /^\s*#\[\s*(?:[\w:]+::)*test(?:\([^\]]*\))?\]\s*$/;
 
   const moduleStack: Array<{ name: string; braceLevel: number }> = [];
-  const srcDir = path.join(cargoDir, "src");
-  const relPath = path.relative(srcDir, filePath).replace(/\\/g, "/");
-  if (!relPath.startsWith("..")) {
-    relPath
-      .replace(/\.rs$/, "")
+  const relPath = path.relative(cargoDir, filePath).replace(/\\/g, "/");
+
+  // Handle integration tests in tests/ directory
+  if (relPath.startsWith("tests/")) {
+    // For integration tests, each file is a separate crate
+    // Module path is based on the file name (without .rs) and any subdirectories
+    const testRelPath = relPath.replace(/^tests\//, "").replace(/\.rs$/, "");
+    testRelPath
       .replace(/\/mod$/, "")
       .replace(/\//g, "::")
       .split("::")
       .filter(Boolean)
       .forEach((n) => moduleStack.push({ name: n, braceLevel: -1 }));
+  } else {
+    // Handle unit tests in src/ directory
+    const srcDir = path.join(cargoDir, "src");
+    const srcRelPath = path.relative(srcDir, filePath).replace(/\\/g, "/");
+    if (!srcRelPath.startsWith("..")) {
+      srcRelPath
+        .replace(/\.rs$/, "")
+        .replace(/\/mod$/, "")
+        .replace(/\//g, "::")
+        .split("::")
+        .filter(Boolean)
+        .forEach((n) => moduleStack.push({ name: n, braceLevel: -1 }));
+    }
   }
 
   const result: Record<string, string> = {};
@@ -317,7 +391,7 @@ async function runProfileCommand(fileName?: string, testName?: string) {
 
 /* ─────────────────────── registration ───────────────────── */
 
-export function registerTestRunner(ctx: vscode.ExtensionContext) {
+export function registerTestRunner(ctx: vscodeType.ExtensionContext) {
   ctx.subscriptions.push(
     vscode.commands.registerCommand("extension.rust.tests.runTest", (f, t) =>
       runTestCommand(f, t, false, false)
