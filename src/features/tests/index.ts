@@ -20,6 +20,11 @@ interface TestInfo {
   range: vscodeType.Range;
 }
 
+interface TestModuleInfo {
+  range: vscodeType.Range;
+  name: string; // e.g., "tests" or the module name
+}
+
 /** Find all #[test]-annotated (incl. parameterised) functions, incl. async */
 function findTests(doc: vscodeType.TextDocument): TestInfo[] {
   const lines = doc.getText().split(/\r?\n/);
@@ -48,25 +53,84 @@ function findTests(doc: vscodeType.TextDocument): TestInfo[] {
   return tests;
 }
 
+/** Find all #[cfg(test)] mod blocks */
+function findTestModules(doc: vscodeType.TextDocument): TestModuleInfo[] {
+  const lines = doc.getText().split(/\r?\n/);
+  const modules: TestModuleInfo[] = [];
+
+  // Pattern to match #[cfg(test)] followed by mod
+  const cfgTestRe = /^\s*#\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*$/;
+  const modRe = /^\s*mod\s+(\w+)\s*\{/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^\s*\/\//.test(line) || !cfgTestRe.test(line)) continue;
+
+    // Look for mod declaration in the next few lines
+    for (let j = i + 1; j < Math.min(i + 6, lines.length); j++) {
+      const m = modRe.exec(lines[j]);
+      if (m) {
+        const name = m[1];
+        const start = doc.positionAt(
+          lines.slice(0, i).join("\n").length + (i ? 1 : 0)
+        );
+        const end = doc.positionAt(lines.slice(0, j + 1).join("\n").length);
+        modules.push({ name, range: new vscode!.Range(start, end) });
+        break;
+      }
+    }
+  }
+  return modules;
+}
+
 class TestCodeLensProvider implements vscodeType.CodeLensProvider {
   provideCodeLenses(doc: vscodeType.TextDocument): vscodeType.CodeLens[] {
-    const actions: Array<[string, string]> = [
+    const lenses: vscodeType.CodeLens[] = [];
+
+    // Actions for individual tests
+    const testActions: Array<[string, string]> = [
       ["Run Test", "extension.rust.tests.runTest"],
       ["Watch Test", "extension.rust.tests.watchTest"],
       ["Run Release Test", "extension.rust.tests.runReleaseTest"],
       ["Watch Release Test", "extension.rust.tests.watchReleaseTest"],
       ["Profile Test (Samply)", "extension.rust.tests.profileTest"],
     ];
-    return findTests(doc).flatMap(({ name, range }) =>
-      actions.map(
-        ([title, cmd]) =>
+
+    // Actions for test modules (run all tests in module)
+    const moduleActions: Array<[string, string]> = [
+      ["Run All Tests", "extension.rust.tests.runTest"],
+      ["Watch All Tests", "extension.rust.tests.watchTest"],
+      ["Run All Tests (Release)", "extension.rust.tests.runReleaseTest"],
+      ["Watch All Tests (Release)", "extension.rust.tests.watchReleaseTest"],
+    ];
+
+    // Add lenses for individual tests
+    findTests(doc).forEach(({ name, range }) => {
+      testActions.forEach(([title, cmd]) => {
+        lenses.push(
           new vscode!.CodeLens(range, {
             title,
             command: cmd,
             arguments: [doc.fileName, name],
           })
-      )
-    );
+        );
+      });
+    });
+
+    // Add lenses for test modules (no testName = run all)
+    findTestModules(doc).forEach(({ range }) => {
+      moduleActions.forEach(([title, cmd]) => {
+        lenses.push(
+          new vscode!.CodeLens(range, {
+            title,
+            command: cmd,
+            arguments: [doc.fileName, undefined], // undefined = run all tests
+          })
+        );
+      });
+    });
+
+    return lenses;
   }
 }
 

@@ -769,24 +769,69 @@ function findTests(doc) {
   }
   return tests;
 }
+function findTestModules(doc) {
+  const lines = doc.getText().split(/\r?\n/);
+  const modules = [];
+  const cfgTestRe = /^\s*#\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*$/;
+  const modRe = /^\s*mod\s+(\w+)\s*\{/;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^\s*\/\//.test(line) || !cfgTestRe.test(line)) continue;
+    for (let j = i + 1; j < Math.min(i + 6, lines.length); j++) {
+      const m = modRe.exec(lines[j]);
+      if (m) {
+        const name = m[1];
+        const start = doc.positionAt(
+          lines.slice(0, i).join("\n").length + (i ? 1 : 0)
+        );
+        const end = doc.positionAt(lines.slice(0, j + 1).join("\n").length);
+        modules.push({ name, range: new vscode.Range(start, end) });
+        break;
+      }
+    }
+  }
+  return modules;
+}
 var TestCodeLensProvider = class {
   provideCodeLenses(doc) {
-    const actions = [
+    const lenses = [];
+    const testActions = [
       ["Run Test", "extension.rust.tests.runTest"],
       ["Watch Test", "extension.rust.tests.watchTest"],
       ["Run Release Test", "extension.rust.tests.runReleaseTest"],
       ["Watch Release Test", "extension.rust.tests.watchReleaseTest"],
       ["Profile Test (Samply)", "extension.rust.tests.profileTest"]
     ];
-    return findTests(doc).flatMap(
-      ({ name, range }) => actions.map(
-        ([title, cmd]) => new vscode.CodeLens(range, {
-          title,
-          command: cmd,
-          arguments: [doc.fileName, name]
-        })
-      )
-    );
+    const moduleActions = [
+      ["Run All Tests", "extension.rust.tests.runTest"],
+      ["Watch All Tests", "extension.rust.tests.watchTest"],
+      ["Run All Tests (Release)", "extension.rust.tests.runReleaseTest"],
+      ["Watch All Tests (Release)", "extension.rust.tests.watchReleaseTest"]
+    ];
+    findTests(doc).forEach(({ name, range }) => {
+      testActions.forEach(([title, cmd]) => {
+        lenses.push(
+          new vscode.CodeLens(range, {
+            title,
+            command: cmd,
+            arguments: [doc.fileName, name]
+          })
+        );
+      });
+    });
+    findTestModules(doc).forEach(({ range }) => {
+      moduleActions.forEach(([title, cmd]) => {
+        lenses.push(
+          new vscode.CodeLens(range, {
+            title,
+            command: cmd,
+            arguments: [doc.fileName, void 0]
+            // undefined = run all tests
+          })
+        );
+      });
+    });
+    return lenses;
   }
 };
 function registerTestCodeLens(ctx) {
